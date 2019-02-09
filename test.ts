@@ -27,9 +27,17 @@ benchmark(async function promiseAllFetchDenolandX10(b: BenchmarkTimer) {
   b.stop();
 });
 
+benchmark({
+  name: "runs100ForIncrementX1e6",
+  runs: 100,
+  func() { // Benchmark defintions with runs will not get a timer passed to func
+    for (let i: number = 0; i < 1e6; i++);
+  }
+});
+
 benchmark(function throwing(b: BenchmarkTimer) {
   b.start();
-  throw Error("oops");
+  throw new Error("oops");
 });
 
 runBenchmarks({ skip: /throw/ });

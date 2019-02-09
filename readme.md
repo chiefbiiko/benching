@@ -11,7 +11,7 @@ Bike-shed benchmarking module. Provides flintstone millisecond resolution.
 ## Import
 
 ```ts
-import * as benching from "https://denopkg.com/chiefbiiko/benching/mod.ts";
+import * as benching from "https://deno.land/x/benching/mod.ts";
 ```
 
 ---
@@ -23,15 +23,33 @@ import {
   BenchmarkTimer,
   runBenchmarks,
   benchmark
-} from "https://denopkg.com/chiefbiiko/benching/mod.ts";
+} from "https://deno.land/x/benching/mod.ts";
 
+// Simple
 benchmark(function forIncrementX1e9(b: BenchmarkTimer) {
   b.start();
   for (let i = 0; i < 1e9; i++);
   b.stop();
 });
 
-runBenchmarks();
+// Benchmark definitions with runs will not get a timer passed to func
+// Reporting average execution time for $runs runs of func
+benchmark({
+  name: "runs100ForIncrementX1e6",
+  runs: 100,
+  func() {
+    for (let i: number = 0; i < 1e6; i++);
+  }
+});
+
+// Itsabug
+benchmark(function throwing(b) {
+  b.start();
+  throw new Error("oops");
+});
+
+// Bench control
+runBenchmarks({ skip: /throw/ });
 ```
 
 ---
@@ -63,6 +81,7 @@ export type BenchmarkFunction = {
 export interface BenchmarkDefinition {
   func: BenchmarkFunction;
   name: string;
+  runs?: number;
 }
 
 export interface BenchmarkRunOptions {

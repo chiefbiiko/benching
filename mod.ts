@@ -29,6 +29,7 @@ export type BenchmarkFunction = {
 export interface BenchmarkDefinition {
   func: BenchmarkFunction;
   name: string;
+  runs?: number;
 }
 
 export interface BenchmarkRunOptions {
@@ -52,10 +53,15 @@ export function benchmark(
   if (!bench.name) {
     throw new Error("The benchmark function must not be anonymous");
   }
-  candidates.push({
-    func: typeof bench === "function" ? bench : bench.func,
-    name: bench.name
-  });
+  if (typeof bench === "function") {
+    candidates.push({ name: bench.name, runs: 1, func: bench });
+  } else {
+    candidates.push({
+      name: bench.name,
+      runs: bench.runs && bench.runs >= 1 ? bench.runs | 0 : 1,
+      func: bench.func
+    });
+  }
 }
 
 export async function runBenchmarks({
@@ -77,28 +83,42 @@ export async function runBenchmarks({
   console.log(
     "\nrunning",
     benchmarks.length,
-    `benchmark${benchmarks.length === 1 ? "" : "s"}\n`
+    `benchmark${benchmarks.length === 1 ? " ..." : "s ..."}\n`
   );
-  for (const { func, name } of benchmarks) {
-    // See https://github.com/denoland/deno/pull/1452
-    // about this usage of groupCollapsed
+  for (const { func, name, runs } of benchmarks) {
+    // See https://github.com/denoland/deno/pull/1452 about groupCollapsed
     console.groupCollapsed(`benchmark ${name} ... `);
     // Trying benchmark.func
+    let result: string;
     try {
-      await func(b);
-      console.log(blue(`${clock.stop - clock.start}ms`));
-      console.groupEnd();
-      // Making sure the benchmark was started/stopped properly
-      if (!clock.stop) {
-        throw new Error("The benchmark timer's stop method must be called");
-      } else if (!clock.start) {
-        throw new Error("The benchmark timer's start method must be called");
-      } else if (clock.start > clock.stop) {
-        throw new Error(
-          "The benchmark timer's start method must be called before its " +
-            "stop method"
-        );
+      if (runs === 1) {
+        await func(b);
+        // Making sure the benchmark was started/stopped properly
+        if (!clock.stop) {
+          throw new Error("The benchmark timer's stop method must be called");
+        } else if (!clock.start) {
+          throw new Error("The benchmark timer's start method must be called");
+        } else if (clock.start > clock.stop) {
+          throw new Error(
+            "The benchmark timer's start method must be called before its " +
+              "stop method"
+          );
+        }
+        result = `${clock.stop - clock.start}ms`;
+      } else if (runs > 1) {
+        // Doing the timing internally
+        let pending = runs;
+        b.start();
+        while (pending--) {
+          await func(undefined);
+        }
+        b.stop();
+        const avg: number = (clock.stop - clock.start) / runs;
+        result = `average over ${runs} runs ${avg}ms`;
       }
+      // Timing
+      console.log(blue(result));
+      console.groupEnd();
       measured++;
     } catch (err) {
       failed = true;
