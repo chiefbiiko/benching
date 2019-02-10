@@ -45,6 +45,20 @@ function blue(text: string): string {
   return `\x1b[34m${text}\x1b[0m`;
 }
 
+function assertTiming(clock): void {
+  // Making sure the benchmark was started/stopped properly
+  if (!clock.stop) {
+    throw new Error("The benchmark timer's stop method must be called");
+  } else if (!clock.start) {
+    throw new Error("The benchmark timer's start method must be called");
+  } else if (clock.start > clock.stop) {
+    throw new Error(
+      "The benchmark timer's start method must be called before its " +
+        "stop method"
+    );
+  }
+}
+
 const candidates: Array<BenchmarkDefinition> = [];
 
 export function benchmark(
@@ -81,9 +95,9 @@ export async function runBenchmarks({
   const b: BenchmarkTimer = createBenchmarkTimer(clock);
   // Iterating given benchmark definitions (await-in-loop)
   console.log(
-    "\nrunning",
+    "running",
     benchmarks.length,
-    `benchmark${benchmarks.length === 1 ? " ..." : "s ..."}\n`
+    `benchmark${benchmarks.length === 1 ? " ..." : "s ..."}`
   );
   for (const { func, name, runs } of benchmarks) {
     // See https://github.com/denoland/deno/pull/1452 about groupCollapsed
@@ -93,28 +107,21 @@ export async function runBenchmarks({
     try {
       if (runs === 1) {
         await func(b);
-        // Making sure the benchmark was started/stopped properly
-        if (!clock.stop) {
-          throw new Error("The benchmark timer's stop method must be called");
-        } else if (!clock.start) {
-          throw new Error("The benchmark timer's start method must be called");
-        } else if (clock.start > clock.stop) {
-          throw new Error(
-            "The benchmark timer's start method must be called before its " +
-              "stop method"
-          );
-        }
+        assertTiming(clock);
         result = `${clock.stop - clock.start}ms`;
       } else if (runs > 1) {
-        // Doing the timing internally
+        // Averaging runs
         let pending = runs;
-        b.start();
-        while (pending--) {
-          await func(undefined);
+        let total: number = 0;
+        while (true) {
+          await func(b);
+          assertTiming(clock);
+          total += clock.stop - clock.start;
+          if (!--pending) {
+            result = `runs: ${runs}; avg: ${total / runs}ms`;
+            break;
+          }
         }
-        b.stop();
-        const avg: number = (clock.stop - clock.start) / runs;
-        result = `average over ${runs} runs ${avg}ms`;
       }
       // Timing
       console.log(blue(result));
@@ -131,8 +138,8 @@ export async function runBenchmarks({
   }
   // Log results
   console.log(
-    `\nbenchmark result: ${failed ? red("FAIL") : blue("DONE")}. ` +
-      `${measured} measured; ${filtered} filtered\n`
+    `benchmark result: ${failed ? red("FAIL") : blue("DONE")}. ` +
+      `${measured} measured; ${filtered} filtered`
   );
   // Making sure the program exit code is not zero in case of failure
   if (failed) {

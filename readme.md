@@ -32,20 +32,20 @@ benchmark(function forIncrementX1e9(b: BenchmarkTimer) {
   b.stop();
 });
 
-// Benchmark definitions with runs will not get a timer passed to func
-// Reporting average execution time for $runs runs of func
+// Reporting average measured time for $runs runs of func
 benchmark({
   name: "runs100ForIncrementX1e6",
   runs: 100,
-  func() {
+  func(b: BenchmarkTimer) {
+    b.start();
     for (let i: number = 0; i < 1e6; i++);
+    b.stop();
   }
 });
 
 // Itsabug
 benchmark(function throwing(b) {
   b.start();
-  throw new Error("oops");
 });
 
 // Bench control
