@@ -1,4 +1,4 @@
-import { exit } from "deno";
+import { exit, noColor } from "deno";
 
 interface BenchmarkClock {
   start: number;
@@ -8,17 +8,6 @@ interface BenchmarkClock {
 export interface BenchmarkTimer {
   start: () => void;
   stop: () => void;
-}
-
-function createBenchmarkTimer(clock: BenchmarkClock): BenchmarkTimer {
-  return {
-    start(): void {
-      clock.start = Date.now();
-    },
-    stop(): void {
-      clock.stop = Date.now();
-    }
-  };
 }
 
 export type BenchmarkFunction = {
@@ -38,15 +27,19 @@ export interface BenchmarkRunOptions {
 }
 
 function red(text: string): string {
-  return `\x1b[31m${text}\x1b[0m`;
+  return noColor ? text : `\x1b[31m${text}\x1b[0m`;
 }
 
 function blue(text: string): string {
-  return `\x1b[34m${text}\x1b[0m`;
+  return noColor ? text : `\x1b[34m${text}\x1b[0m`;
 }
 
-function assertTiming(clock): void {
-  // Making sure the benchmark was started/stopped properly
+function verifyOr1Run(runs?: number): number {
+  return runs && runs >= 1 && runs !== Infinity ? Math.floor(runs) : 1;
+}
+
+function assertTiming(clock: BenchmarkClock): void {
+  // NaN indicates that a benchmark has not been timed properly
   if (!clock.stop) {
     throw new Error("The benchmark timer's stop method must be called");
   } else if (!clock.start) {
@@ -57,6 +50,17 @@ function assertTiming(clock): void {
         "stop method"
     );
   }
+}
+
+function createBenchmarkTimer(clock: BenchmarkClock): BenchmarkTimer {
+  return {
+    start(): void {
+      clock.start = Date.now();
+    },
+    stop(): void {
+      clock.stop = Date.now();
+    }
+  };
 }
 
 const candidates: Array<BenchmarkDefinition> = [];
@@ -72,7 +76,7 @@ export function benchmark(
   } else {
     candidates.push({
       name: bench.name,
-      runs: bench.runs && bench.runs >= 1 ? bench.runs | 0 : 1,
+      runs: verifyOr1Run(bench.runs),
       func: bench.func
     });
   }
@@ -83,9 +87,9 @@ export async function runBenchmarks({
   skip = /^\s*$/
 }: BenchmarkRunOptions): Promise<void> {
   // Filtering candidates by the "only" and "skip" constraint
-  const benchmarks: BenchmarkDefinition[] = candidates.filter(({ name }) => {
-    return only.test(name) && !skip.test(name);
-  });
+  const benchmarks: Array<BenchmarkDefinition> = candidates.filter(
+    ({ name }) => only.test(name) && !skip.test(name)
+  );
   // Init main counters and error flag
   const filtered: number = candidates.length - benchmarks.length;
   let measured: number = 0;
@@ -99,44 +103,53 @@ export async function runBenchmarks({
     benchmarks.length,
     `benchmark${benchmarks.length === 1 ? " ..." : "s ..."}`
   );
-  for (const { func, name, runs } of benchmarks) {
+  for (const { name, runs, func } of benchmarks) {
     // See https://github.com/denoland/deno/pull/1452 about groupCollapsed
     console.groupCollapsed(`benchmark ${name} ... `);
     // Trying benchmark.func
     let result: string;
     try {
       if (runs === 1) {
+        // b is a benchmark timer interfacing an unset (NaN) benchmark clock
         await func(b);
+        // Making sure the benchmark was started/stopped properly
         assertTiming(clock);
         result = `${clock.stop - clock.start}ms`;
       } else if (runs > 1) {
         // Averaging runs
-        let pending = runs;
-        let total: number = 0;
+        let pendingRuns = runs;
+        let totalMs: number = 0;
+        // Would be better 2 not run these serially
         while (true) {
+          // b is a benchmark timer interfacing an unset (NaN) benchmark clock
           await func(b);
+          // Making sure the benchmark was started/stopped properly
           assertTiming(clock);
-          total += clock.stop - clock.start;
-          if (!--pending) {
-            result = `runs: ${runs}; avg: ${total / runs}ms`;
+          // Summing up
+          totalMs += clock.stop - clock.start;
+          // Resetting the benchmark clock
+          clock.start = clock.stop = NaN;
+          // Once all ran
+          if (!--pendingRuns) {
+            result = `${runs} runs avg: ${totalMs / runs}ms`;
             break;
           }
         }
       }
-      // Timing
-      console.log(blue(result));
-      console.groupEnd();
-      measured++;
     } catch (err) {
       failed = true;
       console.groupEnd();
       console.error(red(err.stack));
       break;
     }
+    // Reporting
+    console.log(blue(result));
+    console.groupEnd();
+    measured++;
     // Resetting the benchmark clock
     clock.start = clock.stop = NaN;
   }
-  // Log results
+  // Closing results
   console.log(
     `benchmark result: ${failed ? red("FAIL") : blue("DONE")}. ` +
       `${measured} measured; ${filtered} filtered`
