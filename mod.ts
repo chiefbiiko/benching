@@ -32,17 +32,19 @@ interface BenchmarkClock {
   stop: number;
 }
 
-interface BenchmarkMeta {
+interface BenchmarkStats {
+  running: number;
   filtered: number;
   measured: number;
-  failed: boolean;
+  unresolved: number;
+  failed: number;
 }
 
 interface BenchmarkResult {
   index: number;
   timings: Array<number>;
   printed: boolean;
-  failed?: boolean;
+  error: Error;
 }
 
 interface BenchmarkResults {
@@ -57,8 +59,8 @@ function blue(text: string): string {
   return noColor ? text : `\x1b[34m${text}\x1b[0m`;
 }
 
-function verifyOr1Run(runs?: number): number {
-  return runs && runs >= 1 && runs !== Infinity ? Math.floor(runs) : 1;
+function validateOr1Run(runs?: number): number {
+  return !Number.isNaN(runs) && runs >= 1 && runs % 1 === 0 ? runs : 1;
 }
 
 function average(nums: Array<number>): number {
@@ -77,41 +79,25 @@ function report(name: string, timings: Array<number>): string {
   }
 }
 
-function fail(name: string) {
-  return `benchmark ${name} ... ${red("failed")}`;
+function fail(name: string, err: Error) {
+  return `benchmark ${name} ... ${red("failed")}\n${red(err.stack)}`;
 }
 
 function unresolve(name: string) {
   return `benchmark ${name} ... unresolved`;
 }
 
-function logPendingResults(results: BenchmarkResults): void {
-  Object.entries(results)
-    .filter((kv: Array<any>): boolean => kv[1].timings && !kv[1].printed)
-    .forEach(
-      (kv: Array<any>): void => console.log(report(kv[0], kv[1].timings))
-    );
-}
-
-function logFailingResults(results: BenchmarkResults): void {
-  Object.entries(results).forEach(
-    (kv: Array<any>): void => {
-      if (!kv[1].printed && !kv[1].failed && kv[1].timings) {
-        console.log(report(kv[0], kv[1].timings));
-      } else if (!kv[1].printed && kv[1].failed) {
-        console.log(fail(kv[0]));
-      } else {
-        console.log(unresolve(kv[0]));
-      }
-    }
-  );
+function filterCandidates(
+  candidates: Array<BenchmarkDefinition>,
+  { only = /[^\s]/, skip = /^\s*$/ }: BenchmarkRunOptions = {}
+): Array<BenchmarkDefinition> {
+  return candidates.filter(({ name }) => only.test(name) && !skip.test(name));
 }
 
 function assertTiming(clock: BenchmarkClock): void {
-  // NaN indicates that a benchmark has not been timed properly
-  if (!clock.stop) {
+  if (Number.isNaN(clock.stop)) {
     throw new Error("The benchmark timer's stop method must be called");
-  } else if (!clock.start) {
+  } else if (Number.isNaN(clock.start)) {
     throw new Error("The benchmark timer's start method must be called");
   } else if (clock.start > clock.stop) {
     throw new Error(
@@ -119,6 +105,27 @@ function assertTiming(clock: BenchmarkClock): void {
         "stop method"
     );
   }
+}
+
+function printResults(stats: BenchmarkStats, results: BenchmarkResults): void {
+  Object.entries(results).forEach(
+    ([name, result]: [string, BenchmarkResult]): void => {
+      if (!result.printed) {
+        if (result.error instanceof Error) {
+          console.error(fail(name, result.error));
+        } else if (Array.isArray(result.timings)) {
+          console.log(report(name, result.timings));
+        } else {
+          console.log(unresolve(name));
+        }
+      }
+    }
+  );
+  console.log(
+    `benchmark result: ${stats.failed !== 0 ? red("FAIL") : blue("DONE")}. ` +
+      `${stats.measured} measured; ${stats.filtered} filtered; ` +
+      `${stats.unresolved} unresolved; ${stats.failed} failed`
+  );
 }
 
 function createBenchmarkTimer(clock: BenchmarkClock): BenchmarkTimer {
@@ -132,84 +139,74 @@ function createBenchmarkTimer(clock: BenchmarkClock): BenchmarkTimer {
   };
 }
 
-function createRunner(func: BenchmarkFunction): () => Promise<number> {
-  return async (): Promise<number> => {
-    // clock and b are specific for this runner
-    const clock: BenchmarkClock = { start: NaN, stop: NaN };
-    const b: BenchmarkTimer = createBenchmarkTimer(clock);
-    // Running the benchmark function
-    await func(b);
-    // Making sure the benchmark was started/stopped properly
-    assertTiming(clock);
-    // Returning measured time
-    return clock.stop - clock.start;
-  };
-}
-
-function initRunners(
-  func: BenchmarkFunction,
-  runs: number
-): Array<Promise<number>> {
-  return new Array(runs)
-    .fill(null)
-    .map((): Promise<number> => createRunner(func)());
-}
-
 function createBenchmarkResults(
   benchmarks: Array<BenchmarkDefinition>
 ): BenchmarkResults {
   return benchmarks.reduce(
     (
       acc: BenchmarkResults,
-      cur: BenchmarkDefinition,
+      { name }: BenchmarkDefinition,
       i: number
     ): BenchmarkResults => {
-      acc[cur.name] = { index: i, timings: null, printed: false };
+      acc[name] = { index: i, timings: null, printed: false, error: null };
       return acc;
     },
     {}
   );
 }
 
+async function createRunner(func: BenchmarkFunction): Promise<number> {
+  // clock and b are specific for this runner
+  const clock: BenchmarkClock = { start: NaN, stop: NaN };
+  const b: BenchmarkTimer = createBenchmarkTimer(clock);
+  // Running the benchmark function
+  await func(b);
+  // Making sure the benchmark was started/stopped properly
+  assertTiming(clock);
+  // Resolving measured time
+  return clock.stop - clock.start;
+}
+
+function initRunners(
+  func: BenchmarkFunction,
+  runs: number
+): Array<Promise<number>> {
+  return new Array(runs).fill(null).map(createRunner.bind(null, func));
+}
+
 async function createBenchmark(
-  { name, runs, func }: BenchmarkDefinition,
+  stats: BenchmarkStats,
   results: BenchmarkResults,
-  meta: BenchmarkMeta
+  { name, runs, func }: BenchmarkDefinition
 ): Promise<void> {
-  // Running the current benchmark
+  // Running a benchmark
   try {
     results[name].timings = await Promise.all(initRunners(func, runs));
   } catch (err) {
-    meta.failed = results[name].failed = true;
+    stats.failed++;
+    results[name].error = err;
     throw err;
   }
-  // Index of the current benchmark
+  stats.measured++;
+  // Reporting right now if all previous benchmarks been printed
   const curIndex = results[name].index;
-  // Checking whether the previous promise has resolved yet
-  const prevResolved = Object.values(results).some(
-    ({ index, timings }): boolean => {
-      return Array.isArray(timings) && index === curIndex - 1;
-    }
+  const prevIndex = curIndex - 1;
+  const prevPrinted = Object.values(results).some(
+    ({ index, printed }: BenchmarkResult): boolean =>
+      index === prevIndex && printed
   );
-  // Reporting right now if all previous resolved
-  if (curIndex === 0 || prevResolved) {
-    results[name].printed = true;
+  if (curIndex === 0 || prevPrinted) {
     console.log(report(name, results[name].timings));
+    results[name].printed = true;
   }
-  // Counting measurements
-  meta.measured++;
 }
 
 function initBenchmarks(
-  benchmarks: Array<BenchmarkDefinition>,
+  stats: BenchmarkStats,
   results: BenchmarkResults,
-  meta: BenchmarkMeta
+  benchmarks: Array<BenchmarkDefinition>
 ): Array<Promise<void>> {
-  return benchmarks.map(
-    (benchmark: BenchmarkDefinition): Promise<void> => {
-      return createBenchmark(benchmark, results, meta);
-    }
-  );
+  return benchmarks.map(createBenchmark.bind(null, stats, results));
 }
 
 const candidates: Array<BenchmarkDefinition> = [];
@@ -226,7 +223,7 @@ export function bench(
   } else {
     candidates.push({
       name: benchmark.name,
-      runs: verifyOr1Run(benchmark.runs),
+      runs: validateOr1Run(benchmark.runs),
       func: benchmark.func
     });
   }
@@ -234,39 +231,30 @@ export function bench(
 
 /** Runs all registered and non-skipped benchmarks serially. */
 export async function runBenchmarks(opts?: BenchmarkRunOptions): Promise<void> {
-  // Fallback fallthrough regex
-  opts = Object.assign({ only: /[^\s]/, skip: /^\s*$/ }, opts || {});
-  // Filtering candidates by the "only" and "skip" constraint
-  const benchmarks: Array<BenchmarkDefinition> = candidates.filter(
-    ({ name }) => opts.only.test(name) && !opts.skip.test(name)
+  const benchmarks: Array<BenchmarkDefinition> = filterCandidates(
+    candidates,
+    opts
   );
-  // Init main counters and error flag
-  const meta: BenchmarkMeta = {
+  const stats: BenchmarkStats = {
+    running: benchmarks.length,
     filtered: candidates.length - benchmarks.length,
     measured: 0,
-    failed: false
+    unresolved: 0,
+    failed: 0
   };
-  // Simple result store
   const results: BenchmarkResults = createBenchmarkResults(benchmarks);
-  // Running all benchmarks
   console.log(
     "running",
-    benchmarks.length,
-    `benchmark${benchmarks.length === 1 ? " ..." : "s ..."}`
+    stats.running,
+    `benchmark${stats.running === 1 ? " ..." : "s ..."}`
   );
   try {
-    await Promise.all(initBenchmarks(benchmarks, results, meta));
-    logPendingResults(results);
-  } catch (err) {
-    logFailingResults(results);
-  }
-  // Closing results
-  console.log(
-    `benchmark result: ${meta.failed ? red("FAIL") : blue("DONE")}. ` +
-      `${meta.measured} measured; ${meta.filtered} filtered`
-  );
-  // Making sure the program exit code is not zero in case of failure
-  if (meta.failed) {
-    setTimeout(() => exit(1), 0);
+    await Promise.all(initBenchmarks(stats, results, benchmarks));
+  } finally {
+    stats.unresolved = stats.running - stats.measured - stats.failed;
+    printResults(stats, results);
+    if (stats.failed !== 0) {
+      setTimeout(() => exit(1), 0);
+    }
   }
 }
